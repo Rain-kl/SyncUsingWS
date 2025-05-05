@@ -107,20 +107,11 @@ func (c *WebDAVClient) ReadStream(remotePath string) (io.ReadCloser, error) {
 
 // DownloadFile 下载文件到指定本地路径
 func (c *WebDAVClient) DownloadFile(remotePath, localPath string, remoteModTime time.Time) error {
-	return c.DownloadFileWithProgress(remotePath, localPath, remoteModTime, nil)
-}
-
-// ProgressCallback 是用于报告下载进度的回调函数类型
-type ProgressCallback func(downloaded, total int64, speed float64, percentage float64)
-
-// DownloadFileWithProgress 下载文件到指定本地路径，并通过回调函数报告下载进度
-func (c *WebDAVClient) DownloadFileWithProgress(remotePath, localPath string, remoteModTime time.Time, progressCb ProgressCallback) error {
 	// 先获取文件信息以了解文件大小
-	fileInfo, err := c.client.Stat(remotePath)
+	_, err := c.client.Stat(remotePath)
 	if err != nil {
 		return fmt.Errorf("获取远程文件信息失败: %v", err)
 	}
-	totalSize := fileInfo.Size()
 
 	// 读取远程文件
 	reader, err := c.ReadStream(remotePath)
@@ -144,54 +135,8 @@ func (c *WebDAVClient) DownloadFileWithProgress(remotePath, localPath string, re
 		}
 	}()
 
-	// 如果提供了进度回调，创建一个进度读取器
-	if progressCb != nil {
-		startTime := time.Now()
-		downloaded := int64(0)
-		lastUpdateTime := startTime
-		lastDownloaded := int64(0)
-
-		// 定期更新进度的函数
-		updateProgress := func(n int) {
-			downloaded += int64(n)
-			now := time.Now()
-			elapsed := now.Sub(lastUpdateTime).Seconds()
-			percentage := float64(downloaded) * 100 / float64(totalSize)
-
-			// 更新频率控制，确保界面不会闪烁
-			if elapsed >= 0.1 || downloaded == int64(n) || downloaded >= totalSize {
-				speed := float64(downloaded-lastDownloaded) / elapsed // 字节/秒
-				progressCb(downloaded, totalSize, speed, percentage)
-				lastUpdateTime = now
-				lastDownloaded = downloaded
-			}
-		}
-
-		// 创建一个包装了io.Reader的结构，每次读取时都更新进度
-		progressReader := &struct {
-			io.Reader
-			updateFunc func(int)
-		}{
-			Reader:     reader,
-			updateFunc: updateProgress,
-		}
-
-		// 覆盖原有的Read方法
-		read := func(p []byte) (int, error) {
-			n, err := progressReader.Reader.Read(p)
-			if n > 0 {
-				progressReader.updateFunc(n)
-			}
-			return n, err
-		}
-
-		// 使用进度读取器进行复制
-		_, err = io.CopyBuffer(file, readerFunc(read), make([]byte, 32*1024))
-	} else {
-		// 不需要进度回调时，直接复制
-		_, err = io.Copy(file, reader)
-	}
-
+	// 直接复制文件
+	_, err = io.Copy(file, reader)
 	if err != nil {
 		return err
 	}
@@ -210,26 +155,13 @@ func (c *WebDAVClient) DownloadFileWithProgress(remotePath, localPath string, re
 	return os.Chtimes(localPath, remoteModTime, remoteModTime)
 }
 
-// readerFunc 将一个函数转换为io.Reader
-type readerFunc func(p []byte) (int, error)
-
-func (rf readerFunc) Read(p []byte) (int, error) {
-	return rf(p)
-}
-
 // UploadFile 上传本地文件到WebDAV服务器
 func (c *WebDAVClient) UploadFile(localPath, remotePath string, localModTime time.Time) error {
-	return c.UploadFileWithProgress(localPath, remotePath, localModTime, nil)
-}
-
-// UploadFileWithProgress 上传文件到WebDAV，并通过回调函数报告进度
-func (c *WebDAVClient) UploadFileWithProgress(localPath, remotePath string, localModTime time.Time, progressCb ProgressCallback) error {
 	// 获取本地文件信息
-	fileInfo, err := os.Stat(localPath)
+	_, err := os.Stat(localPath)
 	if err != nil {
 		return fmt.Errorf("获取本地文件信息失败: %v", err)
 	}
-	totalSize := fileInfo.Size()
 
 	// 打开本地文件
 	file, err := os.Open(localPath)
@@ -246,53 +178,8 @@ func (c *WebDAVClient) UploadFileWithProgress(localPath, remotePath string, loca
 		}
 	}
 
-	// 如果提供了进度回调，创建一个进度读取器
-	var reader io.Reader = file
-	if progressCb != nil {
-		startTime := time.Now()
-		uploaded := int64(0)
-		lastUpdateTime := startTime
-		lastUploaded := int64(0)
-
-		// 定期更新进度
-		updateProgress := func(n int) {
-			uploaded += int64(n)
-			now := time.Now()
-			elapsed := now.Sub(lastUpdateTime).Seconds()
-			percentage := float64(uploaded) * 100 / float64(totalSize)
-
-			// 更新频率控制
-			if elapsed >= 0.1 || uploaded == int64(n) || uploaded >= totalSize {
-				speed := float64(uploaded-lastUploaded) / elapsed
-				progressCb(uploaded, totalSize, speed, percentage)
-				lastUpdateTime = now
-				lastUploaded = uploaded
-			}
-		}
-
-		// 创建进度包装器
-		progressReader := &struct {
-			io.Reader
-			updateFunc func(int)
-		}{
-			Reader:     reader,
-			updateFunc: updateProgress,
-		}
-
-		// 覆盖Read方法
-		read := func(p []byte) (int, error) {
-			n, err := progressReader.Reader.Read(p)
-			if n > 0 {
-				progressReader.updateFunc(n)
-			}
-			return n, err
-		}
-
-		reader = readerFunc(read)
-	}
-
 	// 上传文件
-	err = c.client.WriteStream(remotePath, reader, 0644)
+	err = c.client.WriteStream(remotePath, file, 0644)
 	if err != nil {
 		return fmt.Errorf("上传文件失败: %v", err)
 	}

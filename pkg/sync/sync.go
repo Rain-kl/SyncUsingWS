@@ -16,22 +16,17 @@ import (
 
 // SyncManager 同步管理器，负责协调同步过程
 type SyncManager struct {
-	client      *client.WebDAVClient
-	config      *config.Config
-	semaphore   chan struct{} // 用于控制并发
-	downloadMap sync.Map      // 存储当前下载的文件及其行号
-	linesMutex  sync.Mutex    // 保护行号分配
-	nextLine    int           // 下一个可用的行号
+	client    *client.WebDAVClient
+	config    *config.Config
+	semaphore chan struct{} // 用于控制并发
 }
 
 // NewSyncManager 创建一个新的同步管理器
 func NewSyncManager(client *client.WebDAVClient, cfg *config.Config) *SyncManager {
 	return &SyncManager{
-		client:      client,
-		config:      cfg,
-		semaphore:   make(chan struct{}, cfg.MaxConcurrent),
-		downloadMap: sync.Map{},
-		nextLine:    0,
+		client:    client,
+		config:    cfg,
+		semaphore: make(chan struct{}, cfg.MaxConcurrent),
 	}
 }
 
@@ -143,7 +138,7 @@ func (s *SyncManager) BackupToWebDAV() error {
 
 	elapsed := time.Since(startTime)
 	if err != nil {
-		log.Printf("备份失败: %v, 耗时: %s", err, elapsed)
+		log.Printf("备份失败: %v, 耗时: %s", err)
 		return err
 	}
 
@@ -180,14 +175,6 @@ func (s *SyncManager) SyncDirectory(remotePath string) error {
 
 	// 合并排序后的文件列表，目录优先
 	sortedFiles := append(directories, regularFiles...)
-
-	// 为并行下载准备空间
-	if len(regularFiles) > 0 {
-		// 为每个文件下载腾出终端空间
-		for i := 0; i < len(regularFiles) && i < s.config.MaxConcurrent; i++ {
-			fmt.Println()
-		}
-	}
 
 	var wg sync.WaitGroup
 	errorsCh := make(chan error, len(sortedFiles))
@@ -269,14 +256,6 @@ func (s *SyncManager) syncLocalToWebDAV(relativePath string) error {
 
 	// 合并排序后的列表，先处理目录
 	sortedEntries := append(directories, regularFiles...)
-
-	// 为并发上传准备空间
-	if len(regularFiles) > 0 {
-		// 为每个文件上传腾出终端空间
-		for i := 0; i < len(regularFiles) && i < s.config.MaxConcurrent; i++ {
-			fmt.Println()
-		}
-	}
 
 	var wg sync.WaitGroup
 	errorsCh := make(chan error, len(sortedEntries))
@@ -389,36 +368,16 @@ func (s *SyncManager) syncLocalFileToWebDAV(relPath, remotePath string) error {
 	if needsUpload {
 		log.Printf("上传文件: %s (大小: %s)", remotePath, formatSize(localInfo.Size()))
 
-		// 获取行号，用于在终端固定位置显示进度
-		lineNumber := s.getLineNumber(remotePath)
-		defer s.releaseLineNumber(remotePath)
-
-		// 创建进度条
-		progressCh := make(chan struct{})
-		go s.displayProgressBar(remotePath, localInfo.Size(), lineNumber, progressCh)
-
 		// 使用重试机制上传文件
 		err := util.Retry(s.config.MaxRetries, s.config.RetryDelay, func() error {
-			return s.client.UploadFileWithProgress(
-				localPath,
-				remotePath,
-				localInfo.ModTime(),
-				func(uploaded, total int64, speed float64, percentage float64) {
-					s.updateProgress(remotePath, uploaded, total, speed, percentage, lineNumber)
-				},
-			)
+			return s.client.UploadFile(localPath, remotePath, localInfo.ModTime())
 		})
 
-		// 通知进度条协程结束
-		close(progressCh)
-
 		if err != nil {
-			s.clearLine(lineNumber) // 清除当前行
 			log.Printf("上传失败: %s: %v", remotePath, err)
 			return err
 		}
 
-		s.clearLine(lineNumber) // 清除当前行
 		log.Printf("完成上传: %s (%s)", remotePath, formatSize(localInfo.Size()))
 		return nil
 	}
@@ -453,131 +412,21 @@ func (s *SyncManager) SyncFile(file client.FileInfo) error {
 			return fmt.Errorf("创建目录 %s 失败: %v", filepath.Dir(localPath), err)
 		}
 
-		// 获取行号，用于在终端固定位置显示进度
-		lineNumber := s.getLineNumber(file.Path)
-		defer s.releaseLineNumber(file.Path)
-
-		// 创建进度条
-		progressCh := make(chan struct{})
-		go s.displayProgressBar(file.Path, file.Size, lineNumber, progressCh)
-
 		// 使用重试机制下载文件
 		err := util.Retry(s.config.MaxRetries, s.config.RetryDelay, func() error {
-			return s.client.DownloadFileWithProgress(
-				file.Path,
-				localPath,
-				file.LastModified,
-				func(downloaded, total int64, speed float64, percentage float64) {
-					s.updateProgress(file.Path, downloaded, total, speed, percentage, lineNumber)
-				},
-			)
+			return s.client.DownloadFile(file.Path, localPath, file.LastModified)
 		})
 
-		// 通知进度条协程结束
-		close(progressCh)
-
 		if err != nil {
-			s.clearLine(lineNumber) // 清除当前行
 			log.Printf("下载失败: %s: %v", file.Path, err)
 			return err
 		}
 
-		s.clearLine(lineNumber) // 清除当前行
 		log.Printf("完成下载: %s (%s)", file.Path, formatSize(file.Size))
 		return nil
 	}
 
 	return nil
-}
-
-// displayProgressBar 显示下载进度条
-func (s *SyncManager) displayProgressBar(filename string, size int64, lineNumber int, done <-chan struct{}) {
-	// 等待首次进度更新或结束信号
-	select {
-	case <-done:
-		return
-	case <-time.After(500 * time.Millisecond):
-		// 如果500ms内没有进度更新或结束信号，继续执行
-	}
-
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C:
-			// 显示进度的代码会通过updateProgress更新，这里只是定期刷新
-		}
-	}
-}
-
-// updateProgress 更新并显示下载进度
-func (s *SyncManager) updateProgress(filename string, downloaded, total int64, speed float64, percentage float64, lineNumber int) {
-	// 计算进度条宽度 (最大40个字符)
-	width := 40
-	completed := int(float64(width) * percentage / 100)
-
-	// 构建进度条
-	progressBar := "["
-	for i := 0; i < width; i++ {
-		if i < completed {
-			progressBar += "="
-		} else if i == completed {
-			progressBar += ">"
-		} else {
-			progressBar += " "
-		}
-	}
-	progressBar += "]"
-
-	// 格式化下载速度和文件大小
-	speedStr := formatSpeed(speed)
-	downloadedStr := formatSize(downloaded)
-	totalStr := formatSize(total)
-
-	// 保存当前光标位置
-	fmt.Print("\033[s")
-
-	// 移动到对应的行号位置
-	fmt.Printf("\033[%dA", s.nextLine-lineNumber)
-
-	// 清除该行并输出进度信息
-	fmt.Printf("\033[2K\r[%d] %s %s/%s %s %.1f%% %s",
-		lineNumber+1, progressBar, downloadedStr, totalStr, speedStr, percentage, filepath.Base(filename))
-
-	// 恢复光标位置
-	fmt.Print("\033[u")
-}
-
-// getLineNumber 获取一个新的行号用于显示进度
-func (s *SyncManager) getLineNumber(filePath string) int {
-	s.linesMutex.Lock()
-	defer s.linesMutex.Unlock()
-
-	lineNumber := s.nextLine
-	s.nextLine++
-	s.downloadMap.Store(filePath, lineNumber)
-
-	return lineNumber
-}
-
-// releaseLineNumber 释放行号以便重用
-func (s *SyncManager) releaseLineNumber(filePath string) {
-	s.downloadMap.Delete(filePath)
-}
-
-// clearLine 清除指定行的内容
-func (s *SyncManager) clearLine(lineNumber int) {
-	// 记住当前光标位置
-	fmt.Print("\033[s")
-	// 移动到指定行
-	fmt.Printf("\033[%dA", s.nextLine-lineNumber)
-	// 清除该行
-	fmt.Print("\033[2K")
-	// 恢复光标位置
-	fmt.Print("\033[u")
 }
 
 // buildLocalFileList 构建本地文件列表（相对路径）
@@ -674,18 +523,4 @@ func formatSize(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
-
-// formatSpeed 格式化下载速度
-func formatSpeed(bytesPerSecond float64) string {
-	const unit = 1024
-	if bytesPerSecond < unit {
-		return fmt.Sprintf("%.1f B/s", bytesPerSecond)
-	}
-	div, exp := float64(unit), 0
-	for n := bytesPerSecond / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB/s", bytesPerSecond/div, "KMGTPE"[exp])
 }
