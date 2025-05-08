@@ -1,6 +1,6 @@
-# SyncUsingWS
+# SyncUsingWebDav
 
-SyncUsingWS 是一个基于 Go 语言的 WebDAV 文件同步工具，支持本地目录与 WebDAV 服务器之间的双向同步。
+SyncUsingWebDAV 是一个基于 Go 语言的 WebDAV 文件同步工具，支持本地目录与 WebDAV 服务器之间的双向同步。
 
 ## 功能特点
 
@@ -21,7 +21,7 @@ SyncUsingWS 是一个基于 Go 语言的 WebDAV 文件同步工具，支持本�
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-username/SyncUsingWS.git
+git clone https://github.com/Rain-kl/SyncUsingWebDav.git
 cd SyncUsingWS
 
 # 构建项目
