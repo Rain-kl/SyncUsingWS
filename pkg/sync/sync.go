@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"SyncUsingWS/pkg/client"
-	"SyncUsingWS/pkg/config"
-	"SyncUsingWS/pkg/util"
+	"SyncUsingWebDav/pkg/client"
+	"SyncUsingWebDav/pkg/config"
+	"SyncUsingWebDav/pkg/util"
 )
 
 // SyncManager 同步管理器，负责协调同步过程

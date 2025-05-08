@@ -1,4 +1,4 @@
-module SyncUsingWS
+module SyncUsingWebDav
 
 go 1.24
 

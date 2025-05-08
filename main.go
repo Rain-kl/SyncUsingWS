@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"log"
 
-	"SyncUsingWS/pkg/client"
-	"SyncUsingWS/pkg/config"
-	syncPkg "SyncUsingWS/pkg/sync"
+	"SyncUsingWebDav/pkg/client"
+	"SyncUsingWebDav/pkg/config"
+	syncPkg "SyncUsingWebDav/pkg/sync"
 )
 
 func main() {

@@ -22,7 +22,7 @@ SyncUsingWebDAV 是一个基于 Go 语言的 WebDAV 文件同步工具，支持�
 ```bash
 # 克隆仓库
 git clone https://github.com/Rain-kl/SyncUsingWebDav.git
-cd SyncUsingWS
+cd SyncUsingWebDav
 
 # 构建项目
 go build
